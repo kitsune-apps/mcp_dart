@@ -522,7 +522,7 @@ class StreamableHttpClientTransport implements Transport {
 
       // Add body
       final bodyJson = jsonEncode(message.toJson());
-      request.write(bodyJson);
+      request.add(utf8.encode(bodyJson));
 
       final response = await request.close();
 

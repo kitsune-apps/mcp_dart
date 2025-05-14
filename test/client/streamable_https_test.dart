@@ -476,5 +476,37 @@ void main() {
       // server received and processed our DELETE request
       expect(true, isTrue);
     });
+
+    test('send method handles Unicode characters', () async {
+      transport = StreamableHttpClientTransport(serverUrl);
+      await transport.start();
+
+      const unicodeString =
+          'こんにちは世界🌍🚀'; // "Hello, world" in Japanese + emojis
+
+      final request = JsonRpcRequest(
+        id: 456,
+        method: 'test/method',
+        params: {'message': unicodeString},
+      );
+
+      final completer = Completer<JsonRpcMessage>();
+      transport.onmessage = (message) {
+        completer.complete(message);
+      };
+
+      await transport.send(request);
+
+      final response = await completer.future.timeout(
+        Duration(seconds: 5),
+        onTimeout: () => throw TimeoutException('No response received'),
+      );
+
+      expect(response, isA<JsonRpcResponse>());
+      final jsonRpcResponse = response as JsonRpcResponse;
+      expect(jsonRpcResponse.id, equals(456));
+      expect(jsonRpcResponse.result['success'], isTrue);
+      expect(jsonRpcResponse.result['echo']['message'], equals(unicodeString));
+    });
   });
 }
