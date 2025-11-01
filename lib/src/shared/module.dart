@@ -7,3 +7,4 @@ library;
 export 'iostream.dart'; // Core server implementation for handling MCP logic.
 export 'protocol.dart'; // MCP protocol utilities for message serialization/deserialization.
 export 'transport.dart'; // Transport layer for server-client communication.
+export 'oauth_types.dart'; // OAuth 2.1 types and metadata structures.

@@ -5,6 +5,8 @@ import 'dart:math' as math;
 
 import 'package:mcp_dart/src/shared/transport.dart';
 import 'package:mcp_dart/src/types.dart';
+import 'package:mcp_dart/src/client/auth.dart';
+import 'package:mcp_dart/src/shared/oauth_types.dart';
 
 /// Default reconnection options for StreamableHTTP connections
 const _defaultStreamableHttpReconnectionOptions =
@@ -147,6 +149,9 @@ class StreamableHttpClientTransport implements Transport {
         _reconnectionOptions = opts?.reconnectionOptions ??
             _defaultStreamableHttpReconnectionOptions;
 
+  Uri? _resourceMetadataUrl;
+  bool _hasCompletedAuthFlow = false;
+
   Future<void> _authThenStart() async {
     if (_authProvider == null) {
       throw UnauthorizedError("No auth provider");
@@ -154,7 +159,11 @@ class StreamableHttpClientTransport implements Transport {
 
     AuthResult result;
     try {
-      result = await auth(_authProvider!, serverUrl: _url);
+      result = await auth(
+        _authProvider!,
+        serverUrl: _url,
+        resourceMetadataUrl: _resourceMetadataUrl,
+      );
     } catch (error) {
       if (error is Error) {
         onerror?.call(error);
@@ -164,7 +173,7 @@ class StreamableHttpClientTransport implements Transport {
       rethrow;
     }
 
-    if (result != "AUTHORIZED") {
+    if (result != AuthResult.authorized) {
       throw UnauthorizedError();
     }
 
@@ -219,6 +228,8 @@ class StreamableHttpClientTransport implements Transport {
 
       if (response.statusCode != 200) {
         if (response.statusCode == 401 && _authProvider != null) {
+          // Extract resource metadata URL from WWW-Authenticate header
+          _resourceMetadataUrl = extractResourceMetadataUrl(response);
           // Need to authenticate
           return await _authThenStart();
         }
@@ -460,9 +471,13 @@ class StreamableHttpClientTransport implements Transport {
       throw UnauthorizedError("No auth provider");
     }
 
-    final result = await auth(_authProvider!,
-        serverUrl: _url, authorizationCode: authorizationCode);
-    if (result != "AUTHORIZED") {
+    final result = await auth(
+      _authProvider!,
+      serverUrl: _url,
+      authorizationCode: authorizationCode,
+      resourceMetadataUrl: _resourceMetadataUrl,
+    );
+    if (result != AuthResult.authorized) {
       throw UnauthorizedError("Failed to authorize");
     }
   }
@@ -503,8 +518,14 @@ class StreamableHttpClientTransport implements Transport {
         final tokens = await _authProvider!.tokens();
         if (tokens == null) {
           // No tokens available - trigger authentication flow
-          await _authProvider!.redirectToAuthorization();
-          throw UnauthorizedError('Authentication required');
+          final result = await auth(_authProvider!, serverUrl: _url);
+          if (result != AuthResult.authorized) {
+            throw UnauthorizedError('Authentication required');
+          }
+          // Retry send after auth
+          return send(message,
+              resumptionToken: resumptionToken,
+              onResumptionToken: onResumptionToken);
         }
       }
 
@@ -534,15 +555,43 @@ class StreamableHttpClientTransport implements Transport {
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         if (response.statusCode == 401 && _authProvider != null) {
-          // Authentication failed with the server - try to refresh or redirect
-          await _authProvider!.redirectToAuthorization();
-          throw UnauthorizedError('Authentication failed with the server');
+          // Prevent infinite recursion when server returns 401 after successful auth
+          if (_hasCompletedAuthFlow) {
+            throw StreamableHttpError(
+              401,
+              'Server returned 401 after successful authentication',
+            );
+          }
+
+          // Extract resource metadata URL from WWW-Authenticate header
+          _resourceMetadataUrl = extractResourceMetadataUrl(response);
+
+          // Authentication failed - try to refresh or redirect
+          final result = await auth(
+            _authProvider!,
+            serverUrl: _url,
+            resourceMetadataUrl: _resourceMetadataUrl,
+          );
+          if (result != AuthResult.authorized) {
+            throw UnauthorizedError('Authentication failed');
+          }
+
+          // Mark that we completed auth flow
+          _hasCompletedAuthFlow = true;
+
+          // Retry send after auth
+          return send(message,
+              resumptionToken: resumptionToken,
+              onResumptionToken: onResumptionToken);
         }
 
         final text = await response.transform(utf8.decoder).join();
         throw McpError(0,
             "Error POSTing to endpoint (HTTP ${response.statusCode}): $text");
       }
+
+      // Reset auth loop flag on successful response
+      _hasCompletedAuthFlow = false;
 
       // If the response is 202 Accepted, there's no body to process
       if (response.statusCode == 202) {
@@ -656,54 +705,4 @@ class StreamableHttpClientTransport implements Transport {
   bool _isInitializedNotification(JsonRpcMessage message) {
     return message is JsonRpcInitializedNotification;
   }
-}
-
-/// Represents an unauthorized error
-class UnauthorizedError extends Error {
-  final String? message;
-
-  UnauthorizedError([this.message]);
-
-  @override
-  String toString() => 'Unauthorized${message != null ? ': $message' : ''}';
-}
-
-/// Represents an OAuth client provider for authentication
-abstract class OAuthClientProvider {
-  /// Get current tokens if available
-  Future<OAuthTokens?> tokens();
-
-  /// Redirect to authorization endpoint
-  Future<void> redirectToAuthorization();
-}
-
-/// Represents OAuth tokens
-class OAuthTokens {
-  final String accessToken;
-  final String? refreshToken;
-
-  OAuthTokens({required this.accessToken, this.refreshToken});
-}
-
-/// Result of an authentication attempt
-typedef AuthResult = String; // "AUTHORIZED" or other values
-
-/// Performs authentication with the provided OAuth client
-Future<AuthResult> auth(OAuthClientProvider provider,
-    {required Uri serverUrl, String? authorizationCode}) async {
-  // Simple implementation that would need to be expanded in a real implementation
-  final tokens = await provider.tokens();
-  if (tokens != null) {
-    return "AUTHORIZED";
-  }
-
-  // If we have an authorization code, we'd process it here
-  if (authorizationCode != null) {
-    // Implementation would include exchanging the code for tokens
-    return "AUTHORIZED";
-  }
-
-  // Need to redirect for authorization
-  await provider.redirectToAuthorization();
-  return "NEEDS_AUTH";
 }
