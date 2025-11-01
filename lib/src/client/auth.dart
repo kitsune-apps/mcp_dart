@@ -12,6 +12,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:http/http.dart';
 import 'package:pkce/pkce.dart';
 import '../shared/oauth_types.dart';
 
@@ -209,8 +210,8 @@ abstract class OAuthClientProvider {
 /// WWW-Authenticate: Bearer realm="mcp",
 ///   resource_metadata="https://server.com/.well-known/oauth-protected-resource"
 /// ```
-Uri? extractResourceMetadataUrl(HttpClientResponse response) {
-  final authenticateHeader = response.headers.value('www-authenticate');
+Uri? extractResourceMetadataUrl(StreamedResponse response) {
+  final authenticateHeader = response.headers['www-authenticate'];
   if (authenticateHeader == null) return null;
 
   final parts = authenticateHeader.split(' ');
