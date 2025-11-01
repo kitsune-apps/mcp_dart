@@ -1,10 +1,14 @@
 import 'dart:async';
 
+import 'package:mcp_dart/src/shared/logging.dart';
 import 'package:mcp_dart/src/shared/protocol.dart';
 import 'package:mcp_dart/src/shared/transport.dart';
 import 'package:mcp_dart/src/shared/uri_template.dart';
 import 'package:mcp_dart/src/types.dart';
+
 import 'server.dart';
+
+final _logger = Logger("mcp_dart.server.mcp");
 
 typedef CompleteCallback = Future<List<String>> Function(String value);
 
@@ -81,24 +85,28 @@ class ResourceTemplateRegistration {
 
 class _RegisteredTool {
   final String? description;
-  final Map<String, dynamic>? inputSchemaProperties;
+  final ToolInputSchema? toolInputSchema;
+  final ToolOutputSchema? toolOutputSchema;
   final ToolAnnotations? annotations;
   final ToolCallback callback;
 
   const _RegisteredTool({
     this.description,
-    this.inputSchemaProperties,
+    this.toolInputSchema,
+    this.toolOutputSchema,
     this.annotations,
     required this.callback,
   });
 
   Tool toTool(String name) {
-    final schema = ToolInputSchema(properties: inputSchemaProperties);
     return Tool(
-        name: name,
-        description: description,
-        inputSchema: schema,
-        annotations: annotations);
+      name: name,
+      description: description,
+      inputSchema: toolInputSchema ?? ToolInputSchema(),
+      // Do not include output schema in the payload if it isn't defined
+      outputSchema: toolOutputSchema,
+      annotations: annotations,
+    );
   }
 }
 
@@ -239,8 +247,8 @@ class McpServer {
             registeredTool.callback(args: toolArgs, extra: extra),
           );
         } catch (error) {
-          print("Error executing tool '$toolName': $error");
-          return CallToolResult(
+          _logger.warn("Error executing tool '$toolName': $error");
+          return CallToolResult.fromContent(
             content: [TextContent(text: error.toString())],
             isError: true,
           );
@@ -290,7 +298,7 @@ class McpServer {
     try {
       return _createCompletionResult(await completer(argInfo.value));
     } catch (e) {
-      print(
+      _logger.warn(
         "Error during prompt argument completion for '${ref.name}.${argInfo.name}': $e",
       );
       throw McpError(ErrorCode.internalError.value, "Completion failed");
@@ -314,7 +322,7 @@ class McpServer {
     try {
       return _createCompletionResult(await completer(argInfo.value));
     } catch (e) {
-      print(
+      _logger.warn(
         "Error during resource template completion for '${ref.uri}' variable '${argInfo.name}': $e",
       );
       throw McpError(ErrorCode.internalError.value, "Completion failed");
@@ -354,7 +362,7 @@ class McpServer {
                 )
                 .toList();
           } catch (e) {
-            print("Error listing resources for template: $e");
+            _logger.warn("Error listing resources for template: $e");
             return <Resource>[];
           }
         });
@@ -470,7 +478,7 @@ class McpServer {
             throw StateError("No callback found");
           }
         } catch (error) {
-          print("Error executing prompt '$name': $error");
+          _logger.warn("Error executing prompt '$name': $error");
           if (error is McpError) rethrow;
           throw McpError(
             ErrorCode.internalError.value,
@@ -560,7 +568,12 @@ class McpServer {
   void tool(
     String name, {
     String? description,
+    ToolInputSchema? toolInputSchema,
+    ToolOutputSchema? toolOutputSchema,
+    @Deprecated('Use toolInputSchema instead')
     Map<String, dynamic>? inputSchemaProperties,
+    @Deprecated('Use toolOutputSchema instead')
+    Map<String, dynamic>? outputSchemaProperties,
     ToolAnnotations? annotations,
     required ToolCallback callback,
   }) {
@@ -569,7 +582,14 @@ class McpServer {
     }
     _registeredTools[name] = _RegisteredTool(
       description: description,
-      inputSchemaProperties: inputSchemaProperties,
+      toolInputSchema: toolInputSchema ??
+          (inputSchemaProperties != null
+              ? ToolInputSchema(properties: inputSchemaProperties)
+              : null),
+      toolOutputSchema: toolOutputSchema ??
+          (outputSchemaProperties != null
+              ? ToolOutputSchema(properties: outputSchemaProperties)
+              : null),
       annotations: annotations,
       callback: callback,
     );

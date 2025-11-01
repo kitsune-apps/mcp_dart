@@ -1,3 +1,37 @@
+## 0.6.4
+
+- Fix issue with StreamableHTTP server not setting correct content-type for SSE
+
+## 0.6.3
+
+- Replace print statements with lightweight logging implementation
+
+## 0.6.2
+
+- Remove trailing CR before processing the lines
+
+## 0.6.1
+
+- Fix issue with CallToolResult not including metadata
+
+## 0.6.0
+
+- Add ToolInputSchema and ToolOutputSchema support in server.tool()
+- Deprecate inputSchemaProperties and outputSchemaProperties in server.tool()
+- Update examples to use ToolInputSchema and ToolOutputSchema
+
+## 0.5.3
+
+- Support Web Client for StreamableHTTP
+
+## 0.5.2
+
+- Preserve required fields in ToolInputSchema
+
+## 0.5.1
+
+- Add support for OutputScheme (<https://modelcontextprotocol.io/specification/draft/server/tools#output-schema>)
+
 ## 0.5.0
 
 - Protocol version 2025-03-26

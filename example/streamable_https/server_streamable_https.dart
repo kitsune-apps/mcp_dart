@@ -67,12 +67,18 @@ McpServer getServer() {
   server.tool(
     'greet',
     description: 'A simple greeting tool',
-    inputSchemaProperties: {
-      'name': {'type': 'string', 'description': 'Name to greet'},
-    },
+    toolInputSchema: ToolInputSchema(
+      properties: {
+        'name': {
+          'type': 'string',
+          'description': 'Name to greet',
+        },
+      },
+      required: ['name'],
+    ),
     callback: ({args, extra}) async {
       final name = args?['name'] as String? ?? 'world';
-      return CallToolResult(
+      return CallToolResult.fromContent(
         content: [
           TextContent(text: 'Hello, $name!'),
         ],
@@ -85,9 +91,15 @@ McpServer getServer() {
     'multi-greet',
     description:
         'A tool that sends different greetings with delays between them',
-    inputSchemaProperties: {
-      'name': {'type': 'string', 'description': 'Name to greet'},
-    },
+    toolInputSchema: ToolInputSchema(
+      properties: {
+        'name': {
+          'type': 'string',
+          'description': 'Name to greet',
+        },
+      },
+      required: [],
+    ),
     annotations: ToolAnnotations(
       title: 'Multiple Greeting Tool',
       readOnlyHint: true,
@@ -124,7 +136,7 @@ McpServer getServer() {
         data: 'Sending second greeting to $name',
       )));
 
-      return CallToolResult(
+      return CallToolResult.fromContent(
         content: [
           TextContent(text: 'Good morning, $name!'),
         ],
@@ -162,18 +174,20 @@ McpServer getServer() {
     'start-notification-stream',
     description:
         'Starts sending periodic notifications for testing resumability',
-    inputSchemaProperties: {
-      'interval': {
-        'type': 'number',
-        'description': 'Interval in milliseconds between notifications',
-        'default': 100,
+    toolInputSchema: ToolInputSchema(
+      properties: {
+        'interval': {
+          'type': 'number',
+          'description': 'Interval in milliseconds between notifications',
+          'default': 100,
+        },
+        'count': {
+          'type': 'number',
+          'description': 'Number of notifications to send (0 for 100)',
+          'default': 50,
+        },
       },
-      'count': {
-        'type': 'number',
-        'description': 'Number of notifications to send (0 for 100)',
-        'default': 50,
-      },
-    },
+    ),
     callback: ({args, extra}) async {
       final interval = args?['interval'] as num? ?? 100;
       final count = args?['count'] as num? ?? 50;
@@ -200,7 +214,7 @@ McpServer getServer() {
         await sleep(interval.toInt());
       }
 
-      return CallToolResult(
+      return CallToolResult.fromContent(
         content: [
           TextContent(
             text: 'Started sending periodic notifications every ${interval}ms',
@@ -231,15 +245,36 @@ McpServer getServer() {
   return server;
 }
 
+void setCorsHeaders(HttpResponse response) {
+  response.headers.set('Access-Control-Allow-Origin', '*'); // Allow any origin
+  response.headers
+      .set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  response.headers.set('Access-Control-Allow-Headers',
+      'Origin, X-Requested-With, Content-Type, Accept, mcp-session-id, Last-Event-ID, Authorization');
+  response.headers.set('Access-Control-Allow-Credentials', 'true');
+  response.headers.set('Access-Control-Max-Age', '86400'); // 24 hours
+  response.headers.set('Access-Control-Expose-Headers', 'mcp-session-id');
+}
+
 void main() async {
   // Map to store transports by session ID
   final transports = <String, StreamableHTTPServerTransport>{};
 
   // Create HTTP server
-  final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 3000);
+  final server = await HttpServer.bind(InternetAddress.anyIPv4, 3000);
   print('MCP Streamable HTTP Server listening on port 3000');
 
   await for (final request in server) {
+    // Apply CORS headers to all responses
+    setCorsHeaders(request.response);
+
+    if (request.method == 'OPTIONS') {
+      // Handle CORS preflight request
+      request.response.statusCode = HttpStatus.ok;
+      await request.response.close();
+      continue;
+    }
+
     if (request.uri.path != '/mcp') {
       // Not an MCP endpoint
       request.response
@@ -250,6 +285,11 @@ void main() async {
     }
 
     switch (request.method) {
+      case 'OPTIONS':
+        // Handle preflight requests
+        request.response.statusCode = HttpStatus.ok;
+        await request.response.close();
+        break;
       case 'POST':
         await handlePostRequest(request, transports);
         break;
@@ -262,7 +302,9 @@ void main() async {
       default:
         request.response
           ..statusCode = HttpStatus.methodNotAllowed
-          ..headers.set(HttpHeaders.allowHeader, 'GET, POST, DELETE')
+          ..headers.set(HttpHeaders.allowHeader, 'GET, POST, DELETE, OPTIONS');
+        // CORS headers already applied at the top
+        request.response
           ..write('Method Not Allowed')
           ..close();
     }
@@ -328,13 +370,17 @@ Future<void> handlePostRequest(
       final server = getServer();
       await server.connect(transport);
 
+      print('Handling initialization request for a new session');
       await transport.handleRequest(request, body);
       return; // Already handled
     } else {
       // Invalid request - no session ID or not initialization request
       request.response
         ..statusCode = HttpStatus.badRequest
-        ..headers.set(HttpHeaders.contentTypeHeader, 'application/json')
+        ..headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+      // Apply CORS headers to this specific response
+      setCorsHeaders(request.response);
+      request.response
         ..write(jsonEncode({
           'jsonrpc': '2.0',
           'error': {
@@ -364,7 +410,10 @@ Future<void> handlePostRequest(
     if (!headersSent) {
       request.response
         ..statusCode = HttpStatus.internalServerError
-        ..headers.set(HttpHeaders.contentTypeHeader, 'application/json')
+        ..headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+      // Apply CORS headers
+      setCorsHeaders(request.response);
+      request.response
         ..write(jsonEncode({
           'jsonrpc': '2.0',
           'error': {
@@ -385,8 +434,10 @@ Future<void> handleGetRequest(
 ) async {
   final sessionId = request.headers.value('mcp-session-id');
   if (sessionId == null || !transports.containsKey(sessionId)) {
+    request.response.statusCode = HttpStatus.badRequest;
+    // Apply CORS headers
+    setCorsHeaders(request.response);
     request.response
-      ..statusCode = HttpStatus.badRequest
       ..write('Invalid or missing session ID')
       ..close();
     return;
@@ -411,8 +462,10 @@ Future<void> handleDeleteRequest(
 ) async {
   final sessionId = request.headers.value('mcp-session-id');
   if (sessionId == null || !transports.containsKey(sessionId)) {
+    request.response.statusCode = HttpStatus.badRequest;
+    // Apply CORS headers
+    setCorsHeaders(request.response);
     request.response
-      ..statusCode = HttpStatus.badRequest
       ..write('Invalid or missing session ID')
       ..close();
     return;
@@ -436,8 +489,10 @@ Future<void> handleDeleteRequest(
     }
 
     if (!headersSent) {
+      request.response.statusCode = HttpStatus.internalServerError;
+      // Apply CORS headers
+      setCorsHeaders(request.response);
       request.response
-        ..statusCode = HttpStatus.internalServerError
         ..write('Error processing session termination')
         ..close();
     }

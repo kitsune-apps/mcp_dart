@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:http/http.dart' as http;
 import 'package:mcp_dart/src/shared/transport.dart';
 import 'package:mcp_dart/src/types.dart';
 
@@ -137,6 +137,8 @@ class StreamableHttpClientTransport implements Transport {
   @override
   void Function(JsonRpcMessage message)? onmessage;
 
+  final http.Client _httpClient;
+
   StreamableHttpClientTransport(
     Uri url, {
     StreamableHttpClientTransportOptions? opts,
@@ -145,7 +147,8 @@ class StreamableHttpClientTransport implements Transport {
         _authProvider = opts?.authProvider,
         _sessionId = opts?.sessionId,
         _reconnectionOptions = opts?.reconnectionOptions ??
-            _defaultStreamableHttpReconnectionOptions;
+            _defaultStreamableHttpReconnectionOptions,
+        _httpClient = http.Client();
 
   Future<void> _authThenStart() async {
     if (_authProvider == null) {
@@ -208,14 +211,9 @@ class StreamableHttpClientTransport implements Transport {
         headers['last-event-id'] = resumptionToken;
       }
 
-      final client = HttpClient();
-      final request = await client.getUrl(_url);
-
-      headers.forEach((name, value) {
-        request.headers.set(name, value);
-      });
-
-      final response = await request.close();
+      final request = http.Request('GET', _url);
+      request.headers.addAll(headers);
+      final response = await _httpClient.send(request);
 
       if (response.statusCode != 200) {
         if (response.statusCode == 401 && _authProvider != null) {
@@ -299,7 +297,7 @@ class StreamableHttpClientTransport implements Transport {
     });
   }
 
-  void _handleSseStream(HttpClientResponse stream, StartSseOptions options) {
+  void _handleSseStream(http.StreamedResponse stream, StartSseOptions options) {
     final onResumptionToken = options.onResumptionToken;
     final replayMessageId = options.replayMessageId;
 
@@ -369,7 +367,7 @@ class StreamableHttpClientTransport implements Transport {
     }
 
     // Convert the stream to a broadcast stream to allow multiple listeners if needed
-    final broadcastStream = stream.asBroadcastStream();
+    final broadcastStream = stream.stream;
 
     // Create a subscription to the stream
     final subscription =
@@ -380,7 +378,10 @@ class StreamableHttpClientTransport implements Transport {
         // Process the buffer line by line
         while (buffer.contains('\n')) {
           final index = buffer.indexOf('\n');
-          final line = buffer.substring(0, index);
+          var line = buffer.substring(0, index);
+          if (line.endsWith('\r')) {
+            line = line.substring(0, line.length - 1);
+          }
           buffer = buffer.substring(index + 1);
 
           if (line.isEmpty) {
@@ -472,6 +473,7 @@ class StreamableHttpClientTransport implements Transport {
     // Abort any pending requests
     _abortController?.add(true);
     _abortController?.close();
+    _httpClient.close();
 
     onclose?.call();
   }
@@ -512,22 +514,14 @@ class StreamableHttpClientTransport implements Transport {
       headers['content-type'] = 'application/json';
       headers['accept'] = 'application/json, text/event-stream';
 
-      final client = HttpClient();
-      final request = await client.postUrl(_url);
+      final request = http.Request('POST', _url);
+      request.headers.addAll(headers);
+      request.body = jsonEncode(message.toJson());
 
-      // Add headers
-      headers.forEach((name, value) {
-        request.headers.set(name, value);
-      });
-
-      // Add body
-      final bodyJson = jsonEncode(message.toJson());
-      request.add(utf8.encode(bodyJson));
-
-      final response = await request.close();
+      final response = await _httpClient.send(request);
 
       // Handle session ID received during initialization
-      final sessionId = response.headers.value('mcp-session-id');
+      final sessionId = response.headers['mcp-session-id'];
       if (sessionId != null) {
         _sessionId = sessionId;
       }
@@ -539,7 +533,7 @@ class StreamableHttpClientTransport implements Transport {
           throw UnauthorizedError('Authentication failed with the server');
         }
 
-        final text = await response.transform(utf8.decoder).join();
+        final text = await response.stream.transform(utf8.decoder).join();
         throw McpError(0,
             "Error POSTing to endpoint (HTTP ${response.statusCode}): $text");
       }
@@ -565,7 +559,7 @@ class StreamableHttpClientTransport implements Transport {
       final hasRequests = message is JsonRpcRequest && message.id != null;
 
       // Check the response type
-      final contentType = response.headers.value('content-type');
+      final contentType = response.headers['content-type'];
 
       if (hasRequests) {
         if (contentType?.contains('text/event-stream') ?? false) {
@@ -574,7 +568,7 @@ class StreamableHttpClientTransport implements Transport {
               response, StartSseOptions(onResumptionToken: onResumptionToken));
         } else if (contentType?.contains('application/json') ?? false) {
           // For non-streaming servers, we might get direct JSON responses
-          final jsonStr = await response.transform(utf8.decoder).join();
+          final jsonStr = await response.stream.transform(utf8.decoder).join();
           final data = jsonDecode(jsonStr);
 
           if (data is List) {
@@ -623,15 +617,7 @@ class StreamableHttpClientTransport implements Transport {
     try {
       final headers = await _commonHeaders();
 
-      final client = HttpClient();
-      final request = await client.deleteUrl(_url);
-
-      // Add headers
-      headers.forEach((name, value) {
-        request.headers.set(name, value);
-      });
-
-      final response = await request.close();
+      final response = await _httpClient.delete(_url, headers: headers);
 
       // We specifically handle 405 as a valid response according to the spec,
       // meaning the server does not support explicit session termination
