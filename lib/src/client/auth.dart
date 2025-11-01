@@ -11,8 +11,8 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
-import 'package:http/http.dart';
+import 'dart:io' show SocketException;
+import 'package:http/http.dart' as http;
 import 'package:pkce/pkce.dart';
 import '../shared/oauth_types.dart';
 
@@ -210,7 +210,7 @@ abstract class OAuthClientProvider {
 /// WWW-Authenticate: Bearer realm="mcp",
 ///   resource_metadata="https://server.com/.well-known/oauth-protected-resource"
 /// ```
-Uri? extractResourceMetadataUrl(StreamedResponse response) {
+Uri? extractResourceMetadataUrl(http.StreamedResponse response) {
   final authenticateHeader = response.headers['www-authenticate'];
   if (authenticateHeader == null) return null;
 
@@ -242,7 +242,7 @@ Future<OAuthProtectedResourceMetadata?> discoverOAuthProtectedResourceMetadata(
   Uri serverUrl, {
   Uri? resourceMetadataUrl,
 }) async {
-  final client = HttpClient();
+  final client = http.Client();
   try {
     Uri metadataUrl;
     if (resourceMetadataUrl != null) {
@@ -257,9 +257,10 @@ Future<OAuthProtectedResourceMetadata?> discoverOAuthProtectedResourceMetadata(
       );
     }
 
-    final request = await client.getUrl(metadataUrl);
-    request.headers.set('accept', 'application/json');
-    final response = await request.close();
+    final response = await client.get(
+      metadataUrl,
+      headers: {'accept': 'application/json'},
+    );
 
     if (response.statusCode == 404) {
       return null; // No auth required
@@ -272,8 +273,7 @@ Future<OAuthProtectedResourceMetadata?> discoverOAuthProtectedResourceMetadata(
       );
     }
 
-    final body = await response.transform(utf8.decoder).join();
-    final json = jsonDecode(body) as Map<String, dynamic>;
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
     return OAuthProtectedResourceMetadata.fromJson(json);
   } finally {
     client.close();
@@ -345,15 +345,16 @@ List<({Uri url, String type})> buildDiscoveryUrls(Uri authServerUrl) {
 Future<AuthorizationServerMetadata?> discoverAuthorizationServerMetadata(
   Uri authServerUrl,
 ) async {
-  final client = HttpClient();
+  final client = http.Client();
   try {
     final urlsToTry = buildDiscoveryUrls(authServerUrl);
 
     for (final entry in urlsToTry) {
       try {
-        final request = await client.getUrl(entry.url);
-        request.headers.set('accept', 'application/json');
-        final response = await request.close();
+        final response = await client.get(
+          entry.url,
+          headers: {'accept': 'application/json'},
+        );
 
         if (response.statusCode >= 400 && response.statusCode < 500) {
           continue; // Try next URL
@@ -366,8 +367,7 @@ Future<AuthorizationServerMetadata?> discoverAuthorizationServerMetadata(
           );
         }
 
-        final body = await response.transform(utf8.decoder).join();
-        final json = jsonDecode(body) as Map<String, dynamic>;
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
         return AuthorizationServerMetadata.fromJson(json);
       } on SocketException {
         // Network error, try next URL
@@ -559,9 +559,9 @@ void _applyPublicAuth(String clientId, Map<String, String> params) {
 ///
 /// Returns a specific [OAuthError] subclass based on the error code,
 /// or a generic [ServerError] if parsing fails.
-Future<OAuthError> parseErrorResponse(HttpClientResponse response) async {
+OAuthError parseErrorResponse(http.Response response) {
   final statusCode = response.statusCode;
-  final body = await response.transform(utf8.decoder).join();
+  final body = response.body;
 
   try {
     final json = jsonDecode(body) as Map<String, dynamic>;
@@ -681,7 +681,7 @@ Future<OAuthTokens> exchangeAuthorization(
     );
   }
 
-  final client = HttpClient();
+  final client = http.Client();
   try {
     final headers = <String, String>{
       'content-type': 'application/x-www-form-urlencoded',
@@ -710,18 +710,17 @@ Future<OAuthTokens> exchangeAuthorization(
     }
 
     // Make request
-    final request = await client.postUrl(tokenUrl);
-    headers.forEach((key, value) => request.headers.set(key, value));
-    request.write(Uri(queryParameters: params).query);
-
-    final response = await request.close();
+    final response = await client.post(
+      tokenUrl,
+      headers: headers,
+      body: params,
+    );
 
     if (response.statusCode != 200) {
-      throw await parseErrorResponse(response);
+      throw parseErrorResponse(response);
     }
 
-    final body = await response.transform(utf8.decoder).join();
-    final json = jsonDecode(body) as Map<String, dynamic>;
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
     return OAuthTokens.fromJson(json);
   } finally {
     client.close();
@@ -759,7 +758,7 @@ Future<OAuthTokens> refreshAuthorization(
     );
   }
 
-  final client = HttpClient();
+  final client = http.Client();
   try {
     final headers = <String, String>{
       'content-type': 'application/x-www-form-urlencoded',
@@ -786,18 +785,17 @@ Future<OAuthTokens> refreshAuthorization(
     }
 
     // Make request
-    final request = await client.postUrl(tokenUrl);
-    headers.forEach((key, value) => request.headers.set(key, value));
-    request.write(Uri(queryParameters: params).query);
-
-    final response = await request.close();
+    final response = await client.post(
+      tokenUrl,
+      headers: headers,
+      body: params,
+    );
 
     if (response.statusCode != 200) {
-      throw await parseErrorResponse(response);
+      throw parseErrorResponse(response);
     }
 
-    final body = await response.transform(utf8.decoder).join();
-    final json = jsonDecode(body) as Map<String, dynamic>;
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
 
     // Preserve original refresh token if not replaced
     final tokens = OAuthTokens.fromJson(json);
@@ -837,21 +835,22 @@ Future<OAuthClientInformationFull> registerClient(
     registrationUrl = authServerUrl.replace(path: '/register');
   }
 
-  final client = HttpClient();
+  final client = http.Client();
   try {
-    final request = await client.postUrl(registrationUrl);
-    request.headers.set('content-type', 'application/json');
-    request.headers.set('accept', 'application/json');
-    request.write(jsonEncode(clientMetadata.toJson()));
-
-    final response = await request.close();
+    final response = await client.post(
+      registrationUrl,
+      headers: {
+        'content-type': 'application/json',
+        'accept': 'application/json',
+      },
+      body: jsonEncode(clientMetadata.toJson()),
+    );
 
     if (response.statusCode != 201 && response.statusCode != 200) {
-      throw await parseErrorResponse(response);
+      throw parseErrorResponse(response);
     }
 
-    final body = await response.transform(utf8.decoder).join();
-    final json = jsonDecode(body) as Map<String, dynamic>;
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
     return OAuthClientInformationFull.fromJson(json);
   } finally {
     client.close();
