@@ -116,48 +116,88 @@ abstract class OAuthClientProvider {
 
   /// Optional: Generates a state parameter for CSRF protection.
   ///
-  /// If not implemented, no state parameter will be included.
-  /// Recommended to generate a cryptographically random string.
-  Future<String>? state() => null;
+  /// Override this getter to provide custom state generation.
+  /// If null, no state parameter will be included.
+  /// Recommended to return a cryptographically random string.
+  ///
+  /// Example:
+  /// ```dart
+  /// @override
+  /// Future<String> Function()? get state => () async {
+  ///   final random = Random.secure();
+  ///   final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+  ///   return base64UrlEncode(bytes);
+  /// };
+  /// ```
+  Future<String> Function()? get state => null;
 
   /// Optional: Adds custom client authentication to token requests.
   ///
-  /// Override this to use non-standard authentication methods.
-  /// When not provided, standard OAuth 2.1 methods are used automatically.
+  /// Override this getter to provide custom authentication for non-standard methods.
+  /// If null, standard OAuth 2.1 methods are used automatically.
   ///
-  /// - [headers]: Modify to add authentication headers
-  /// - [params]: Modify to add authentication parameters
-  /// - [url]: The token endpoint URL being called
-  /// - [metadata]: Authorization server metadata (may be null)
-  Future<void>? addClientAuthentication(
+  /// Example:
+  /// ```dart
+  /// @override
+  /// Future<void> Function(
+  ///   Map<String, String> headers,
+  ///   Map<String, String> params,
+  ///   Uri url,
+  ///   AuthorizationServerMetadata? metadata,
+  /// )? get addClientAuthentication => (headers, params, url, metadata) async {
+  ///   // Custom authentication logic
+  ///   headers['X-Custom-Auth'] = 'my-token';
+  /// };
+  /// ```
+  Future<void> Function(
     Map<String, String> headers,
     Map<String, String> params,
     Uri url,
     AuthorizationServerMetadata? metadata,
-  ) =>
-      null;
+  )? get addClientAuthentication => null;
 
   /// Optional: Custom validation for RFC 8707 Resource Indicators.
   ///
-  /// If not provided, default validation ensures the resource matches
-  /// the MCP server URL (with or without path).
+  /// Override this getter to provide custom resource URL validation.
+  /// If null, default validation ensures the resource matches the MCP server URL.
   ///
-  /// - [serverUrl]: The MCP server URL
-  /// - [resource]: The resource from protected resource metadata
-  /// - Returns: Validated resource URL to use, or null to skip resource parameter
-  Future<Uri?>? validateResourceUrl(Uri serverUrl, String? resource) => null;
+  /// Example:
+  /// ```dart
+  /// @override
+  /// Future<Uri?> Function(Uri serverUrl, String? resource)? get validateResourceUrl =>
+  ///   (serverUrl, resource) async {
+  ///     // Custom validation logic
+  ///     return resource != null ? Uri.parse(resource) : null;
+  ///   };
+  /// ```
+  Future<Uri?> Function(Uri serverUrl, String? resource)?
+      get validateResourceUrl => null;
 
   /// Optional: Invalidates stored credentials when they become invalid.
   ///
+  /// Override this getter to handle credential invalidation.
   /// Called automatically when the server indicates credentials are no longer valid:
   /// - 'all': Clear everything (client info, tokens, verifier)
   /// - 'client': Clear client registration only
   /// - 'tokens': Clear tokens only
   /// - 'verifier': Clear code verifier only
   ///
-  /// If not implemented, credentials will not be automatically cleared,
-  /// and users may need to manually reset authentication state.
-  Future<void>? invalidateCredentials(String scope) => null;
+  /// If null, credentials will not be automatically cleared.
+  ///
+  /// Example:
+  /// ```dart
+  /// @override
+  /// Future<void> Function(String scope)? get invalidateCredentials =>
+  ///   (scope) async {
+  ///     switch (scope) {
+  ///       case 'all':
+  ///         // Clear all stored credentials
+  ///         break;
+  ///       // ...
+  ///     }
+  ///   };
+  /// ```
+  Future<void> Function(String scope)? get invalidateCredentials => null;
 }
 
 /// Extracts the resource_metadata URL from a 401 response's WWW-Authenticate header.
@@ -352,10 +392,10 @@ Future<Uri?> selectResourceUrl(
   final defaultResource = _resourceUrlFromServerUrl(serverUrl);
 
   // Try custom validation if implemented
-  final customResult = await provider.validateResourceUrl.call(
-    defaultResource,
-    resourceMetadata?.resource,
-  );
+  final customValidator = provider.validateResourceUrl;
+  final customResult = customValidator != null
+      ? await customValidator(defaultResource, resourceMetadata?.resource)
+      : null;
 
   // If custom validation was implemented and returned a result, use it
   if (customResult != null) {
@@ -848,7 +888,10 @@ Future<AuthResult> auth(
   } catch (error) {
     // Handle recoverable errors by invalidating credentials and retrying
     if (error is InvalidClientError || error is UnauthorizedClientError) {
-      await provider.invalidateCredentials.call('all');
+      final invalidator = provider.invalidateCredentials;
+      if (invalidator != null) {
+        await invalidator('all');
+      }
       return await _authInternal(
         provider,
         serverUrl: serverUrl,
@@ -857,7 +900,10 @@ Future<AuthResult> auth(
         resourceMetadataUrl: resourceMetadataUrl,
       );
     } else if (error is InvalidGrantError) {
-      await provider.invalidateCredentials.call('tokens');
+      final invalidator = provider.invalidateCredentials;
+      if (invalidator != null) {
+        await invalidator('tokens');
+      }
       return await _authInternal(
         provider,
         serverUrl: serverUrl,
@@ -941,9 +987,7 @@ Future<AuthResult> _authInternal(
       codeVerifier: codeVerifier,
       redirectUri: provider.redirectUrl,
       resource: resource,
-      addClientAuthentication: (headers, params, url, metadata) async {
-        await provider.addClientAuthentication(headers, params, url, metadata);
-      },
+      addClientAuthentication: provider.addClientAuthentication,
     );
 
     await provider.saveTokens(tokens);
@@ -960,10 +1004,7 @@ Future<AuthResult> _authInternal(
         clientInfo: clientInfo,
         refreshToken: tokens!.refreshToken!,
         resource: resource,
-        addClientAuthentication: (headers, params, url, metadata) async {
-          await provider.addClientAuthentication(
-              headers, params, url, metadata);
-        },
+        addClientAuthentication: provider.addClientAuthentication,
       );
 
       await provider.saveTokens(newTokens);
@@ -978,7 +1019,8 @@ Future<AuthResult> _authInternal(
   }
 
   // Step 7: Start new authorization flow
-  final state = await provider.state.call();
+  final stateGenerator = provider.state;
+  final state = stateGenerator != null ? await stateGenerator() : null;
   final authResult = await startAuthorization(
     authorizationServerUrl,
     metadata: metadata,
