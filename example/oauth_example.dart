@@ -3,12 +3,14 @@
 /// This example shows how to:
 /// - Implement OAuthClientProvider for token storage
 /// - Connect to an authenticated MCP server
-/// - Handle authorization callbacks
+/// - Handle authorization callbacks automatically
+/// - Launch browser and receive callback via local HTTP server
 /// - Implement secure token storage
 library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:mcp_dart/mcp_dart.dart';
 
@@ -79,84 +81,127 @@ class InMemoryOAuthProvider implements OAuthClientProvider {
   Future<void> redirectToAuthorization(Uri authorizationUrl) async {
     print('\n🔐 Authorization Required');
     print('━' * 60);
-    print('Please open this URL in your browser:');
-    print('\n$authorizationUrl\n');
-    print('After authorizing, you will be redirected to:');
-    print('$_redirectUri?code=AUTHORIZATION_CODE');
+    print('Opening browser for authorization...');
+    print('\nURL: $authorizationUrl\n');
+    print('Waiting for callback at: $_redirectUri');
     print('━' * 60);
-  }
 
-  @override
-  Future<String> state() async {
-    // Generate cryptographically random state for CSRF protection
-    final random = Random.secure();
-    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
-    return base64UrlEncode(bytes);
-  }
-
-  @override
-  Future<void> invalidateCredentials(String scope) async {
-    print('⚠️  Invalidating credentials: $scope');
-    switch (scope) {
-      case 'all':
-        _tokens = null;
-        _clientInfo = null;
-        _codeVerifier = null;
-        break;
-      case 'tokens':
-        _tokens = null;
-        break;
-      case 'client':
-        _clientInfo = null;
-        break;
-      case 'verifier':
-        _codeVerifier = null;
-        break;
+    // Launch browser with authorization URL
+    try {
+      await _launchBrowser(authorizationUrl);
+      print('✓ Browser launched successfully');
+    } catch (e) {
+      print('⚠️  Could not automatically open browser: $e');
+      print('\nPlease manually open this URL:');
+      print('$authorizationUrl\n');
     }
   }
 
-  // Optional: Custom client authentication
+  /// Launch the system browser with the authorization URL
+  Future<void> _launchBrowser(Uri url) async {
+    final urlString = url.toString();
+
+    // Try different commands based on the platform
+    if (Platform.isMacOS) {
+      await Process.run('open', [urlString]);
+    } else if (Platform.isLinux) {
+      await Process.run('xdg-open', [urlString]);
+    } else if (Platform.isWindows) {
+      await Process.run('cmd', ['/c', 'start', urlString]);
+    } else {
+      throw UnsupportedError('Platform not supported');
+    }
+  }
+
+  // Optional: Generate state for CSRF protection
   @override
-  Future<void>? addClientAuthentication(
+  Future<String> Function()? get state => () async {
+        // Generate cryptographically random state for CSRF protection
+        final random = Random.secure();
+        final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+        return base64UrlEncode(bytes);
+      };
+
+  // Optional: Handle credential invalidation
+  @override
+  Future<void> Function(String scope)? get invalidateCredentials =>
+      (scope) async {
+        print('⚠️  Invalidating credentials: $scope');
+        switch (scope) {
+          case 'all':
+            _tokens = null;
+            _clientInfo = null;
+            _codeVerifier = null;
+            break;
+          case 'tokens':
+            _tokens = null;
+            break;
+          case 'client':
+            _clientInfo = null;
+            break;
+          case 'verifier':
+            _codeVerifier = null;
+            break;
+        }
+      };
+
+  // Optional: Custom client authentication
+  // Leave as null to use default OAuth 2.1 authentication methods
+  @override
+  Future<void> Function(
     Map<String, String> headers,
     Map<String, String> params,
     Uri url,
     AuthorizationServerMetadata? metadata,
-  ) {
-    // Use default authentication
-    return null;
-  }
+  )? get addClientAuthentication => null;
+  // Example custom implementation:
+  // => (headers, params, url, metadata) async {
+  //      headers['X-Custom-Auth'] = 'my-custom-token';
+  //    };
 
-  // Optional: Custom resource validation
+  // Optional: Custom resource URL validation
+  // Leave as null to use default validation
   @override
-  Future<Uri?>? validateResourceUrl(Uri serverUrl, String? resource) {
-    // Use default validation
-    return null;
-  }
+  Future<Uri?> Function(Uri serverUrl, String? resource)?
+      get validateResourceUrl => null;
+  // Example custom implementation:
+  // => (serverUrl, resource) async {
+  //      return resource != null ? Uri.parse(resource) : null;
+  //    };
 }
 
-/// Example MCP client with OAuth authentication
+/// Example MCP client with OAuth authentication.
+///
+/// This example demonstrates:
+/// - Proper implementation of optional OAuth callbacks using nullable function getters
+/// - Local HTTP server for OAuth callback handling
+/// - Browser-based authorization flow
+/// - Token storage and credential invalidation
 Future<void> main() async {
   print('╔═══════════════════════════════════════════════════════════╗');
   print('║     MCP Dart SDK - OAuth 2.1 Authentication Example      ║');
   print('╚═══════════════════════════════════════════════════════════╝\n');
 
-  // Step 1: Create OAuth provider
+  // Step 1: Start local callback server
+  final callbackServer = await OAuthCallbackServer.start();
+  print('🌐 Callback server listening on: ${callbackServer.redirectUri}\n');
+
+  // Step 2: Create OAuth provider with callback server
   final authProvider = InMemoryOAuthProvider(
-    redirectUri: 'myapp://oauth/callback',
+    redirectUri: callbackServer.redirectUri,
     clientName: 'MCP Example Client',
   );
 
-  // Step 2: Create transport with authentication
+  // Step 3: Create transport with authentication
   final serverUrl = Uri.parse('http://localhost:10000/mcp');
-  final transport = StreamableHttpClientTransport(
+  var transport = StreamableHttpClientTransport(
     serverUrl,
     opts: StreamableHttpClientTransportOptions(
       authProvider: authProvider,
     ),
   );
 
-  // Step 3: Create MCP client
+  // Step 4: Create MCP client
   final client = Client(
     Implementation(name: 'example-client', version: '1.0.0'),
   );
@@ -164,7 +209,7 @@ Future<void> main() async {
   print('📡 Connecting to MCP server: $serverUrl\n');
 
   try {
-    // Step 4: Connect (this will trigger OAuth flow if needed)
+    // Step 5: Connect (this will trigger OAuth flow if needed)
     await client.connect(transport);
 
     print('\n✅ Connected successfully!');
@@ -172,16 +217,47 @@ Future<void> main() async {
         'Server: ${client.getServerVersion()?.name} ${client.getServerVersion()?.version}');
     print('Protocol: ${client.getServerCapabilities()}');
 
-    // Step 5: Use the authenticated connection
+    // Step 6: Use the authenticated connection
     await demonstrateAuthenticatedUsage(client);
-  } on UnauthorizedError catch (e) {
-    print('\n❌ Authorization failed: ${e.message}');
-    print('\nTo complete authorization:');
-    print('1. Open the URL shown above in your browser');
-    print('2. Log in and authorize the application');
-    print('3. Copy the authorization code from the redirect URL');
-    print('4. Call: await transport.finishAuth(authorizationCode)');
-    print('5. Retry: await client.connect(transport)');
+  } on UnauthorizedError {
+    print('\n⏳ Waiting for authorization...');
+
+    try {
+      // Wait for the authorization code from the callback server
+      final authCode = await callbackServer.authCodeCompleter.future
+          .timeout(Duration(minutes: 5));
+
+      print('✓ Authorization code received');
+
+      // Complete the OAuth flow
+      await transport.finishAuth(authCode);
+      print('✓ Tokens obtained');
+
+      // Create a new transport instance since the old one was already started
+      transport = StreamableHttpClientTransport(
+        serverUrl,
+        opts: StreamableHttpClientTransportOptions(
+          authProvider: authProvider,
+        ),
+      );
+
+      // Retry connection with valid tokens
+      await client.connect(transport);
+      print('\n✅ Connected successfully!');
+      print(
+          'Server: ${client.getServerVersion()?.name} ${client.getServerVersion()?.version}');
+      print('Protocol: ${client.getServerCapabilities()}');
+
+      // Use the authenticated connection
+      await demonstrateAuthenticatedUsage(client);
+    } on TimeoutException {
+      print('\n❌ Authorization timed out after 5 minutes');
+    } on OAuthError catch (e) {
+      print('\n❌ Failed to complete authorization: ${e.error}');
+      if (e.errorDescription != null) {
+        print('   ${e.errorDescription}');
+      }
+    }
   } on OAuthError catch (e) {
     print('\n❌ OAuth error: ${e.error}');
     if (e.errorDescription != null) {
@@ -194,6 +270,7 @@ Future<void> main() async {
     print('\n❌ Connection error: $e');
   } finally {
     await client.close();
+    await callbackServer.close();
   }
 }
 
@@ -230,26 +307,212 @@ Future<void> demonstrateAuthenticatedUsage(Client client) async {
   }
 }
 
-/// Helper function to handle OAuth callback (would be called by your deep link handler)
-Future<void> handleOAuthCallback(
-  StreamableHttpClientTransport transport,
-  Client client,
-  String authorizationCode,
-) async {
-  print('\n🔄 Processing authorization callback...');
+/// Local HTTP server to receive OAuth callbacks
+///
+/// This server listens on localhost and handles the OAuth redirect.
+/// In production apps:
+/// - Mobile: Use deep links (myapp://oauth/callback)
+/// - Desktop: Use this local server approach or custom URL schemes
+/// - Web: Use same-origin redirects
+class OAuthCallbackServer {
+  final HttpServer _server;
+  final Completer<String> authCodeCompleter;
 
-  try {
-    // Complete the OAuth flow
-    await transport.finishAuth(authorizationCode);
-    print('✓ Authorization code exchanged for tokens');
+  OAuthCallbackServer._(this._server, this.authCodeCompleter);
 
-    // Retry connection with valid tokens
-    await client.connect(transport);
-    print('✓ Connected successfully');
-  } on OAuthError catch (e) {
-    print('❌ Failed to exchange authorization code: ${e.error}');
-    if (e.errorDescription != null) {
-      print('   ${e.errorDescription}');
+  String get redirectUri => 'http://localhost:${_server.port}/oauth/callback';
+
+  /// Start the callback server on a random available port
+  static Future<OAuthCallbackServer> start() async {
+    final completer = Completer<String>();
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+
+    // Handle incoming requests
+    server.listen((HttpRequest request) async {
+      final uri = request.uri;
+
+      // Check if this is the OAuth callback
+      if (uri.path == '/oauth/callback') {
+        final code = uri.queryParameters['code'];
+        final error = uri.queryParameters['error'];
+        final errorDescription = uri.queryParameters['error_description'];
+
+        if (code != null) {
+          // Success - return friendly page and complete
+          request.response
+            ..statusCode = HttpStatus.ok
+            ..headers.contentType = ContentType.html
+            ..write(_successHtml());
+          await request.response.close();
+
+          if (!completer.isCompleted) {
+            completer.complete(code);
+          }
+        } else if (error != null) {
+          // Error - return error page and complete with error
+          request.response
+            ..statusCode = HttpStatus.ok
+            ..headers.contentType = ContentType.html
+            ..write(_errorHtml(error, errorDescription));
+          await request.response.close();
+
+          if (!completer.isCompleted) {
+            completer.completeError(
+              OAuthError(error, errorDescription),
+            );
+          }
+        } else {
+          // Invalid request
+          request.response
+            ..statusCode = HttpStatus.badRequest
+            ..write('Missing required parameters');
+          await request.response.close();
+        }
+      } else {
+        // Unknown path
+        request.response
+          ..statusCode = HttpStatus.notFound
+          ..write('Not found');
+        await request.response.close();
+      }
+    });
+
+    return OAuthCallbackServer._(server, completer);
+  }
+
+  /// Close the callback server
+  Future<void> close() async {
+    await _server.close();
+  }
+
+  static String _successHtml() {
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Authorization Successful</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     }
+    .container {
+      background: white;
+      padding: 3rem;
+      border-radius: 1rem;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      text-align: center;
+      max-width: 400px;
+    }
+    .checkmark {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      display: block;
+      stroke-width: 2;
+      stroke: #4caf50;
+      stroke-miterlimit: 10;
+      margin: 0 auto 1rem;
+      box-shadow: inset 0px 0px 0px #4caf50;
+      animation: fill .4s ease-in-out .4s forwards, scale .3s ease-in-out .9s both;
+    }
+    .checkmark__circle {
+      stroke-dasharray: 166;
+      stroke-dashoffset: 166;
+      stroke-width: 2;
+      stroke-miterlimit: 10;
+      stroke: #4caf50;
+      fill: none;
+      animation: stroke 0.6s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+    }
+    .checkmark__check {
+      transform-origin: 50% 50%;
+      stroke-dasharray: 48;
+      stroke-dashoffset: 48;
+      animation: stroke 0.3s cubic-bezier(0.65, 0, 0.45, 1) 0.8s forwards;
+    }
+    @keyframes stroke {
+      100% { stroke-dashoffset: 0; }
+    }
+    @keyframes scale {
+      0%, 100% { transform: none; }
+      50% { transform: scale3d(1.1, 1.1, 1); }
+    }
+    h1 { color: #333; margin-bottom: 0.5rem; }
+    p { color: #666; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <svg class="checkmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52">
+      <circle class="checkmark__circle" cx="26" cy="26" r="25" fill="none"/>
+      <path class="checkmark__check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+    </svg>
+    <h1>Authorization Successful!</h1>
+    <p>You have successfully authorized the application.</p>
+    <p>You can close this window and return to the application.</p>
+  </div>
+</body>
+</html>
+''';
+  }
+
+  static String _errorHtml(String error, String? description) {
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Authorization Failed</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    }
+    .container {
+      background: white;
+      padding: 3rem;
+      border-radius: 1rem;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      text-align: center;
+      max-width: 400px;
+    }
+    .error-icon {
+      font-size: 4rem;
+      margin-bottom: 1rem;
+    }
+    h1 { color: #d32f2f; margin-bottom: 0.5rem; }
+    p { color: #666; line-height: 1.5; }
+    .error-details {
+      background: #ffebee;
+      padding: 1rem;
+      border-radius: 0.5rem;
+      margin-top: 1rem;
+      font-family: monospace;
+      font-size: 0.9rem;
+      color: #c62828;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="error-icon">❌</div>
+    <h1>Authorization Failed</h1>
+    <p>There was a problem authorizing the application.</p>
+    ${description != null ? '<div class="error-details">$error: $description</div>' : '<div class="error-details">$error</div>'}
+    <p style="margin-top: 1rem;">Please close this window and try again.</p>
+  </div>
+</body>
+</html>
+''';
   }
 }
