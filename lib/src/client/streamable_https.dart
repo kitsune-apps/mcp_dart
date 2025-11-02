@@ -3,10 +3,11 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:http/http.dart' as http;
+import 'package:mcp_dart/src/client/oauth_provider.dart';
+import 'package:mcp_dart/src/client/oauth_types.dart';
 import 'package:mcp_dart/src/shared/transport.dart';
 import 'package:mcp_dart/src/types.dart';
 import 'package:mcp_dart/src/client/auth.dart';
-import 'package:mcp_dart/src/shared/oauth_types.dart';
 
 /// Default reconnection options for StreamableHTTP connections
 const _defaultStreamableHttpReconnectionOptions =

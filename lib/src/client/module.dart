@@ -10,3 +10,6 @@ export './client.dart'; // Client-side implementation for MCP protocol.
 export './stdio.dart'; // Standard I/O-based client communication utilities.
 export './streamable_https.dart'; // Streamable HTTPS communication utilities.
 export './auth.dart'; // OAuth 2.1 authorization implementation.
+export './oauth_types.dart'; // OAuth 2.1 types and metadata structures.
+export './oauth_provider.dart';
+export './oauth_token_storage.dart';
