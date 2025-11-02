@@ -83,19 +83,21 @@ class StreamableHttpReconnectionOptions {
 class StreamableHttpClientTransportOptions {
   /// An OAuth client provider to use for authentication.
   ///
-  /// When an `authProvider` is specified and the connection is started:
-  /// 1. The connection is attempted with any existing access token from the `authProvider`.
-  /// 2. If the access token has expired, the `authProvider` is used to refresh the token.
+  /// When an `authProvider` is specified:
+  /// 1. The transport will automatically detect if authentication is required by attempting
+  ///    connections without auth first.
+  /// 2. If the server returns a 401 response, the transport will use the `authProvider`
+  ///    to authenticate (or refresh tokens if they already exist).
   /// 3. If token refresh fails or no access token exists, and auth is required,
   ///    `OAuthClientProvider.redirectToAuthorization` is called, and an `UnauthorizedError`
-  ///    will be thrown from `connect`/`start`.
+  ///    will be thrown.
+  ///
+  /// This allows you to provide an `authProvider` even for servers that don't require
+  /// authentication - the transport will only use it when necessary.
   ///
   /// After the user has finished authorizing via their user agent, and is redirected
   /// back to the MCP client application, call `StreamableHttpClientTransport.finishAuth`
   /// with the authorization code before retrying the connection.
-  ///
-  /// If an `authProvider` is not provided, and auth is required, an `UnauthorizedError`
-  /// will be thrown.
   ///
   /// `UnauthorizedError` might also be thrown when sending any message over the transport,
   /// indicating that the session has expired, and needs to be re-authed and reconnected.
@@ -516,27 +518,19 @@ class StreamableHttpClientTransport implements Transport {
         return;
       }
 
-      // Check for authentication first - if we need auth, handle it before proceeding
+      // Only refresh tokens if we already have them (server requires auth)
+      // Don't proactively try to auth if we don't have tokens yet
       if (_authProvider != null) {
-        // Try to refresh tokens if needed (proactive refresh)
-        await refreshTokensIfNeeded(
-          _authProvider!,
-          _url,
-          resourceMetadataUrl: _resourceMetadataUrl,
-        );
-
         final tokens = await _authProvider!.tokens();
-        if (tokens == null) {
-          // No tokens available - trigger authentication flow
-          final result = await auth(_authProvider!, serverUrl: _url);
-          if (result != AuthResult.authorized) {
-            throw UnauthorizedError('Authentication required');
-          }
-          // Retry send after auth
-          return send(message,
-              resumptionToken: resumptionToken,
-              onResumptionToken: onResumptionToken);
+        if (tokens != null) {
+          // We have tokens, so refresh them if needed
+          await refreshTokensIfNeeded(
+            _authProvider!,
+            _url,
+            resourceMetadataUrl: _resourceMetadataUrl,
+          );
         }
+        // If no tokens, proceed without auth - server will return 401 if needed
       }
 
       final headers = await _commonHeaders();
