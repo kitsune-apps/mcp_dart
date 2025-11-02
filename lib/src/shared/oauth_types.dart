@@ -75,8 +75,8 @@ class OAuthTokens {
   /// Checks if the access token will expire soon.
   ///
   /// Returns true if the token will expire within the specified [buffer] duration.
-  /// Default buffer is 60 seconds.
-  bool willExpireSoon([Duration buffer = const Duration(seconds: 60)]) {
+  /// Default buffer is 5 minutes.
+  bool willExpireSoon([Duration buffer = const Duration(minutes: 5)]) {
     final expiry = expiresAt;
     if (expiry == null) return false; // Unknown expiry = assume valid
     return DateTime.now().add(buffer).isAfter(expiry);
