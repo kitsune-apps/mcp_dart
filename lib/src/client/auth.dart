@@ -201,6 +201,45 @@ abstract class OAuthClientProvider {
   Future<void> Function(String scope)? get invalidateCredentials => null;
 }
 
+/// Abstract interface for OAuth tokens storage.
+///
+/// Implementations should provide secure persistent storage for OAuth tokens,
+/// client information, and code verifiers across app restarts.
+abstract class TokensStorage {
+  /// Load all persisted OAuth data from storage.
+  Future<void> loadPersistedData();
+
+  /// Get stored tokens.
+  Future<OAuthTokens?> getTokens();
+
+  /// Save tokens to storage.
+  Future<void> saveTokens(OAuthTokens tokens);
+
+  /// Get stored client information.
+  Future<OAuthClientInformation?> getClientInformation();
+
+  /// Save client information to storage.
+  Future<void> saveClientInformation(OAuthClientInformation info);
+
+  /// Get stored code verifier.
+  Future<String> getCodeVerifier();
+
+  /// Save code verifier to storage.
+  Future<void> saveCodeVerifier(String verifier);
+
+  /// Invalidate credentials based on scope.
+  ///
+  /// Supported scopes:
+  /// - 'all': Clear all stored data
+  /// - 'tokens': Clear only tokens
+  /// - 'client': Clear only client information
+  /// - 'verifier': Clear only code verifier
+  Future<void> invalidate(String scope);
+
+  /// Clear all stored OAuth data.
+  Future<void> clearAll();
+}
+
 /// Extracts the resource_metadata URL from a 401 response's WWW-Authenticate header.
 ///
 /// Returns null if the header is missing or malformed.
