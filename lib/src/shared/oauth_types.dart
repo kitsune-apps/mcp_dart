@@ -25,13 +25,18 @@ class OAuthTokens {
   /// The scope(s) granted by this token.
   final String? scope;
 
-  const OAuthTokens({
+  /// Timestamp (in milliseconds since epoch) when these tokens were issued.
+  /// Used to calculate expiration time.
+  final int issuedAt;
+
+  OAuthTokens({
     required this.accessToken,
     this.refreshToken,
     this.tokenType,
     this.expiresIn,
     this.scope,
-  });
+    int? issuedAt,
+  }) : issuedAt = issuedAt ?? DateTime.now().millisecondsSinceEpoch;
 
   factory OAuthTokens.fromJson(Map<String, dynamic> json) {
     return OAuthTokens(
@@ -40,6 +45,7 @@ class OAuthTokens {
       tokenType: json['token_type'] as String?,
       expiresIn: json['expires_in'] as int?,
       scope: json['scope'] as String?,
+      issuedAt: json['issued_at'] as int?,
     );
   }
 
@@ -49,7 +55,51 @@ class OAuthTokens {
         if (tokenType != null) 'token_type': tokenType,
         if (expiresIn != null) 'expires_in': expiresIn,
         if (scope != null) 'scope': scope,
+        'issued_at': issuedAt,
       };
+
+  /// Returns the expiration time as a DateTime, or null if expiry is unknown.
+  DateTime? get expiresAt {
+    if (expiresIn == null) return null;
+    return DateTime.fromMillisecondsSinceEpoch(issuedAt)
+        .add(Duration(seconds: expiresIn!));
+  }
+
+  /// Checks if the access token is currently expired.
+  bool get isExpired {
+    final expiry = expiresAt;
+    if (expiry == null) return false; // Unknown expiry = assume valid
+    return DateTime.now().isAfter(expiry);
+  }
+
+  /// Checks if the access token will expire soon.
+  ///
+  /// Returns true if the token will expire within the specified [buffer] duration.
+  /// Default buffer is 60 seconds.
+  bool willExpireSoon([Duration buffer = const Duration(seconds: 60)]) {
+    final expiry = expiresAt;
+    if (expiry == null) return false; // Unknown expiry = assume valid
+    return DateTime.now().add(buffer).isAfter(expiry);
+  }
+
+  /// Creates a copy of this token with updated values.
+  OAuthTokens copyWith({
+    String? accessToken,
+    String? refreshToken,
+    String? tokenType,
+    int? expiresIn,
+    String? scope,
+    int? issuedAt,
+  }) {
+    return OAuthTokens(
+      accessToken: accessToken ?? this.accessToken,
+      refreshToken: refreshToken ?? this.refreshToken,
+      tokenType: tokenType ?? this.tokenType,
+      expiresIn: expiresIn ?? this.expiresIn,
+      scope: scope ?? this.scope,
+      issuedAt: issuedAt ?? this.issuedAt,
+    );
+  }
 }
 
 /// Metadata about the OAuth client for registration.

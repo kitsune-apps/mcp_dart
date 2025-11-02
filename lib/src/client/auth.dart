@@ -896,6 +896,67 @@ Future<OAuthClientInformationFull> registerClient(
   }
 }
 
+/// Checks if tokens need refreshing.
+///
+/// Returns true if tokens are expired or will expire soon (within 60 seconds).
+///
+/// Example:
+/// ```dart
+/// if (await shouldRefreshTokens(provider)) {
+///   print('Tokens need refresh');
+/// }
+/// ```
+Future<bool> shouldRefreshTokens(OAuthClientProvider provider) async {
+  final currentTokens = await provider.tokens();
+  if (currentTokens == null) return false;
+  if (currentTokens.refreshToken == null) return false;
+  return currentTokens.isExpired || currentTokens.willExpireSoon();
+}
+
+/// Proactively refreshes tokens if they are expired or will expire soon.
+///
+/// Returns true if tokens were successfully refreshed, false if no refresh was needed.
+/// Throws [OAuthError] if refresh fails.
+///
+/// This function checks if the access token is expired or will expire within 60 seconds,
+/// and if so, uses the refresh token to obtain new tokens.
+///
+/// The [StreamableHttpClientTransport] automatically calls this before making requests.
+///
+/// Example:
+/// ```dart
+/// try {
+///   final refreshed = await refreshTokensIfNeeded(
+///     provider,
+///     serverUrl: serverUrl,
+///   );
+///   if (refreshed) {
+///     print('Tokens refreshed successfully');
+///   }
+/// } on OAuthError catch (e) {
+///   print('Failed to refresh tokens: ${e.error}');
+/// }
+/// ```
+Future<bool> refreshTokensIfNeeded(
+  OAuthClientProvider provider,
+  Uri serverUrl, {
+  Uri? resourceMetadataUrl,
+}) async {
+  if (!await shouldRefreshTokens(provider)) {
+    return false; // Token is still valid or can't be refreshed
+  }
+
+  // Perform the refresh by calling auth() without an authorization code
+  // The auth() function will automatically use the refresh token flow
+  final result = await auth(
+    provider,
+    serverUrl: serverUrl,
+    resourceMetadataUrl: resourceMetadataUrl,
+  );
+
+  return result == AuthResult.authorized;
+}
+
 /// Orchestrates the complete OAuth 2.1 authorization flow.
 ///
 /// This is the main entry point for authorization. It handles:

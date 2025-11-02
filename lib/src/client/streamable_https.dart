@@ -517,6 +517,13 @@ class StreamableHttpClientTransport implements Transport {
 
       // Check for authentication first - if we need auth, handle it before proceeding
       if (_authProvider != null) {
+        // Try to refresh tokens if needed (proactive refresh)
+        await refreshTokensIfNeeded(
+          _authProvider!,
+          _url,
+          resourceMetadataUrl: _resourceMetadataUrl,
+        );
+
         final tokens = await _authProvider!.tokens();
         if (tokens == null) {
           // No tokens available - trigger authentication flow
@@ -560,7 +567,27 @@ class StreamableHttpClientTransport implements Transport {
           // Extract resource metadata URL from WWW-Authenticate header
           _resourceMetadataUrl = extractResourceMetadataUrl(response);
 
-          // Authentication failed - try to refresh or redirect
+          // Try to refresh tokens first if we have a refresh token
+          final tokens = await _authProvider!.tokens();
+          if (tokens?.refreshToken != null) {
+            try {
+              final refreshed = await refreshTokensIfNeeded(
+                _authProvider!,
+                _url,
+                resourceMetadataUrl: _resourceMetadataUrl,
+              );
+              if (refreshed) {
+                // Tokens refreshed successfully, retry the request
+                return send(message,
+                    resumptionToken: resumptionToken,
+                    onResumptionToken: onResumptionToken);
+              }
+            } catch (error) {
+              // Refresh failed, fall through to full re-auth
+            }
+          }
+
+          // Authentication failed - try full auth flow
           final result = await auth(
             _authProvider!,
             serverUrl: _url,

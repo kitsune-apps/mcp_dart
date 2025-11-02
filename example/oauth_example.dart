@@ -51,7 +51,10 @@ class InMemoryOAuthProvider implements OAuthClientProvider {
   @override
   Future<void> saveTokens(OAuthTokens tokens) async {
     _tokens = tokens;
-    print('✓ Tokens saved: ${tokens.accessToken.substring(0, 20)}...');
+    final expiryInfo =
+        tokens.expiresAt != null ? ' (expires: ${tokens.expiresAt})' : '';
+    print(
+        '✓ Tokens saved: ${tokens.accessToken.substring(0, 20)}...$expiryInfo');
   }
 
   @override
@@ -219,6 +222,18 @@ Future<void> main() async {
 
     // Step 6: Use the authenticated connection
     await demonstrateAuthenticatedUsage(client);
+
+    // Step 7: Demonstrate token refresh checking
+    print('\n🔍 Checking if tokens need refresh...');
+    final needsRefresh = await shouldRefreshTokens(authProvider);
+    print(
+        needsRefresh ? '⚠️  Tokens need refresh' : '✓ Tokens are still valid');
+
+    // Step 8: Demonstrate automatic token refresh on subsequent requests
+    print('\n⏱️  Waiting 2 seconds before making another request...');
+    await Future.delayed(Duration(seconds: 2));
+    print('📡 Making second request (tokens will auto-refresh if needed)...');
+    await demonstrateAuthenticatedUsage(client);
   } on UnauthorizedError {
     print('\n⏳ Waiting for authorization...');
 
@@ -249,6 +264,19 @@ Future<void> main() async {
       print('Protocol: ${client.getServerCapabilities()}');
 
       // Use the authenticated connection
+      await demonstrateAuthenticatedUsage(client);
+
+      // Demonstrate token refresh checking
+      print('\n🔍 Checking if tokens need refresh...');
+      final needsRefresh = await shouldRefreshTokens(authProvider);
+      print(needsRefresh
+          ? '⚠️  Tokens need refresh'
+          : '✓ Tokens are still valid');
+
+      // Demonstrate automatic token refresh on subsequent requests
+      print('\n⏱️  Waiting 2 seconds before making another request...');
+      await Future.delayed(Duration(seconds: 2));
+      print('📡 Making second request (tokens will auto-refresh if needed)...');
       await demonstrateAuthenticatedUsage(client);
     } on TimeoutException {
       print('\n❌ Authorization timed out after 5 minutes');
