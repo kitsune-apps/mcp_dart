@@ -526,8 +526,29 @@ class OAuthError extends Error {
   OAuthError(this.error, [this.errorDescription, this.errorUri]);
 
   factory OAuthError.fromJson(Map<String, dynamic> json) {
-    final error = json['error'] as String;
-    final description = json['error_description'] ?? 'unknown';
+    // Handle different error formats
+    String error;
+    String description;
+
+    if (json['error'] is String) {
+      // Standard format: error is a string
+      error = json['error'] as String;
+      description = json['error_description'] as String? ?? 'unknown';
+    } else if (json['error'] is Map) {
+      // Nested format: error is a map with message
+      final errorMap = json['error'] as Map<String, dynamic>;
+      error = errorMap['type'] as String? ?? 'unknown_error';
+      description = errorMap['message'] as String? ?? 'unknown';
+    } else if (json['message'] != null) {
+      // Alternative format: only message field exists
+      error = 'unknown_error';
+      description = json['message'] as String;
+    } else {
+      // Fallback: no recognizable error format
+      error = 'unknown_error';
+      description = json.toString();
+    }
+
     final uri = json['error_uri'] as String?;
 
     return switch (error) {
