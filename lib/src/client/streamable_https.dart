@@ -103,7 +103,40 @@ class StreamableHttpClientTransportOptions {
   /// indicating that the session has expired, and needs to be re-authed and reconnected.
   final OAuthClientProvider? authProvider;
 
+  /// Custom headers to include in all HTTP requests.
+  ///
+  /// These headers can be used for:
+  /// - API key authentication (e.g., `{'X-API-Key': 'your-key'}`)
+  /// - Custom client identification headers
+  /// - Any other server-specific headers
+  ///
+  /// Header precedence rules:
+  /// 1. Custom headers (lowest priority) - applied first
+  /// 2. OAuth Authorization header (highest priority) - cannot be overridden if `authProvider` is set
+  /// 3. MCP protocol headers like `mcp-session-id` (highest priority) - cannot be overridden
+  ///
+  /// Example with API key:
+  /// ```dart
+  /// StreamableHttpClientTransportOptions(
+  ///   customHeaders: {'X-API-Key': 'your-api-key'},
+  /// )
+  /// ```
+  ///
+  /// Example combining OAuth with custom headers:
+  /// ```dart
+  /// StreamableHttpClientTransportOptions(
+  ///   authProvider: myOAuthProvider,  // OAuth takes precedence for Authorization
+  ///   customHeaders: {
+  ///     'X-Client-Version': '1.0.0',
+  ///     'X-Platform': 'dart',
+  ///   },
+  /// )
+  /// ```
+  final Map<String, String>? customHeaders;
+
   /// Customizes HTTP requests to the server.
+  ///
+  /// **Deprecated**: Use [customHeaders] for headers. This field is kept for backward compatibility.
   final Map<String, dynamic>? requestInit;
 
   /// Options to configure the reconnection behavior.
@@ -116,6 +149,7 @@ class StreamableHttpClientTransportOptions {
 
   const StreamableHttpClientTransportOptions({
     this.authProvider,
+    this.customHeaders,
     this.requestInit,
     this.reconnectionOptions,
     this.sessionId,
@@ -128,6 +162,7 @@ class StreamableHttpClientTransportOptions {
 class StreamableHttpClientTransport implements Transport {
   StreamController<bool>? _abortController;
   final Uri _url;
+  final Map<String, String>? _customHeaders;
   final Map<String, dynamic>? _requestInit;
   final OAuthClientProvider? _authProvider;
   String? _sessionId;
@@ -148,6 +183,7 @@ class StreamableHttpClientTransport implements Transport {
     Uri url, {
     StreamableHttpClientTransportOptions? opts,
   })  : _url = url,
+        _customHeaders = opts?.customHeaders,
         _requestInit = opts?.requestInit,
         _authProvider = opts?.authProvider,
         _sessionId = opts?.sessionId,
@@ -186,9 +222,35 @@ class StreamableHttpClientTransport implements Transport {
     return await _startOrAuthSse(const StartSseOptions());
   }
 
+  /// Builds common headers for all HTTP requests.
+  ///
+  /// Header precedence (lowest to highest):
+  /// 1. Custom headers from [customHeaders] option
+  /// 2. Legacy headers from [requestInit] option (for backward compatibility)
+  /// 3. OAuth Authorization header (if authProvider is configured and has tokens)
+  /// 4. MCP protocol headers (mcp-session-id)
+  ///
+  /// This ensures that:
+  /// - Custom headers can be used for API keys and other auth methods
+  /// - OAuth takes precedence when configured (cannot be accidentally overridden)
+  /// - Protocol headers are always set correctly
   Future<Map<String, String>> _commonHeaders() async {
     final headers = <String, String>{};
 
+    // 1. Apply custom headers first (lowest priority)
+    if (_customHeaders != null) {
+      headers.addAll(_customHeaders!);
+    }
+
+    // 2. Apply requestInit headers for backward compatibility
+    if (_requestInit != null && _requestInit!.containsKey('headers')) {
+      final requestHeaders = _requestInit!['headers'] as Map<String, dynamic>;
+      for (final entry in requestHeaders.entries) {
+        headers[entry.key] = entry.value.toString();
+      }
+    }
+
+    // 3. Apply OAuth Authorization header (high priority - overrides custom auth headers)
     if (_authProvider != null) {
       final tokens = await _authProvider!.tokens();
       if (tokens != null) {
@@ -196,15 +258,9 @@ class StreamableHttpClientTransport implements Transport {
       }
     }
 
+    // 4. Apply MCP protocol headers (highest priority - cannot be overridden)
     if (_sessionId != null) {
       headers["mcp-session-id"] = _sessionId!;
-    }
-
-    if (_requestInit != null && _requestInit!.containsKey('headers')) {
-      final requestHeaders = _requestInit!['headers'] as Map<String, dynamic>;
-      for (final entry in requestHeaders.entries) {
-        headers[entry.key] = entry.value.toString();
-      }
     }
 
     return headers;
